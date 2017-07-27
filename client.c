@@ -7,6 +7,7 @@
 #include <errno.h>
 #include<pthread.h>
 #define unused(x) if (x){}
+#define TID (unsigned int)pthread_self()
 
 static void
 setnonblock(int fd){
@@ -32,12 +33,12 @@ new_tcp_client(const char* ip, int port){
 }
 
 static void
-write_data(struct ev_loop* reactor, ev_io* w, int events){
+write_data(struct ev_loop* reactor, ev_io* io_w, int events){
     unused(events);
     char str[] = "hello, world!";
-    send(w->fd, str, sizeof(str), 0);
-    printf("send %s size %zu\n", str, sizeof(str));
-    ev_io_stop(reactor, w);
+    send(io_w->fd, str, sizeof(str), 0);
+    printf("|%u|%u| send %s\n", TID, io_w->fd, str);
+    ev_io_stop(reactor, io_w);
 }
 
 static void
@@ -47,12 +48,12 @@ read_data(struct ev_loop* reactor, ev_io* io_r, int events){
     char buf[1024];
     rcv_len = recv(io_r->fd, buf, sizeof(buf) - 1, 0);
     if (0 == rcv_len) {
-        printf("fd %d server close!!\n", io_r->fd);
+        printf("|%u|%u| server close!!!\n", TID, io_r->fd);
     } else if (rcv_len < 0) {
-        printf("fd %d read error %s!!!\n", io_r->fd, strerror(errno));
+        printf("|%u|%u| read error %s!!!%s\n", TID, io_r->fd, buf, strerror(errno));
     } else {
         buf[rcv_len] = '\0';
-        printf("fd %d read %s\n", io_r->fd, buf);
+        printf("|%u|%u| read %s\n", TID, io_r->fd, buf);
     }
     ev_break(reactor, EVBREAK_ALL);
 }
