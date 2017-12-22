@@ -15,7 +15,7 @@ int main(int argc, char **argv)
         exit(1);
     }
     printf("Welcome! This is a UDP server, I can only received message from client and reply with same message\n");
-    
+
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(atoi(argv[1]));
@@ -36,14 +36,15 @@ int main(int argc, char **argv)
     char buff[BUF_LEN];
     struct sockaddr_in clientAddr;
     int n;
-    int len = sizeof(clientAddr);
+    unsigned int len = sizeof(clientAddr);
+    int count = 0;
     while (1)
     {
         n = recvfrom(sock, buff, BUF_LEN-1, 0, (struct sockaddr*)&clientAddr, &len);
         if (n>0)
         {
             buff[n] = 0;
-            printf("receive %d bytes\n", n);
+            printf("累计收包数：%4d， 数据包大小：%4d 字节\n", ++count, n);
             //printf("buff %s\n", buff);
             n = sendto(sock, buff, n, 0, (struct sockaddr *)&clientAddr, sizeof(clientAddr));
             if (n < 0)

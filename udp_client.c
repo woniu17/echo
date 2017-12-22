@@ -7,6 +7,18 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
+#include <time.h>
+
+void get_now_time(char cur[])
+{
+    struct timespec time;
+    clock_gettime(CLOCK_REALTIME, &time);  //获取相对于1970到现在的秒数
+    struct tm t;
+    localtime_r(&time.tv_sec, &t);
+    sprintf(cur, "%04d/%02d/%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon+1, t.tm_mday,
+      t.tm_hour, t.tm_min, t.tm_sec);
+}
 
 int time_subtract(struct timeval *x, struct timeval *y)
 {
@@ -32,9 +44,9 @@ int time_subtract(struct timeval *x, struct timeval *y)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3)
+    if (argc < 3)
     {
-        printf("Usage: %s ip port", argv[0]);
+        printf("Usage: %s ip port [data_len] [ping_interval]", argv[0]);
         exit(1);
     }
     printf("This is a UDP client\n");
@@ -46,10 +58,22 @@ int main(int argc, char **argv)
         perror("socket");
         exit(1);
     }
+    char *host = argv[1];
+    char *port = argv[2];
+    char *data_len = "1400";
+    char *interval = "0";
+    if (argc >= 4) data_len = argv[3];
+    if (argc >= 5) interval = argv[4];
+
+    const int BUF_LEN = 2048;
+    int SEND_LEN = 1400;
+    int ping_interval = 0;
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(atoi(argv[2]));
-    addr.sin_addr.s_addr = inet_addr(argv[1]);
+    addr.sin_addr.s_addr = inet_addr(host);
+    addr.sin_port = htons(atoi(port));
+    SEND_LEN = atoi(data_len);
+    ping_interval = atoi(interval) * 1000;
     if (addr.sin_addr.s_addr == INADDR_NONE)
     {
         printf("Incorrect ip address!");
@@ -57,32 +81,34 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    struct timeval tv;  
-    tv.tv_sec = 2;  
-    tv.tv_usec = 0;  
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {  
-         printf("socket option  SO_RCVTIMEO not support\n");  
-         return;  
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+         printf("socket option  SO_RCVTIMEO not support\n");
+         return 0;
     }
 
-    const int BUF_LEN = 2048;
-    const int SEND_LEN = 1400;
     int i;
-    char buff[BUF_LEN];
-    int len = sizeof(addr);
+    char current[100];
+    char send_buff[BUF_LEN];
+    char recv_buff[BUF_LEN];
+    unsigned int len = sizeof(addr);
     struct timeval start, end;
     int packet_cnt = 0;
     int loss_cnt = 0;
     int long_time_cnt = 0;
+    int d = port[0];
+    d = 'a';
+    printf("UDP包数据内容：%d*%d, 探测间隔：%s 毫秒\n", d, SEND_LEN, interval);
     while (1)
     {
-        for (i = 0; i < SEND_LEN; i++) { buff[i] = 'a'; }
-        buff[i] = 0;
-        //printf("buff %s\n", buff);
-        //exit(0);
+        for (i = 0; i < SEND_LEN; i++) { send_buff[i] = d + i; }
+        send_buff[i] = 0;
         int n;
+        get_now_time(current);
         gettimeofday(&start, 0);
-        n = sendto(sock, buff, SEND_LEN, 0, (struct sockaddr *)&addr, sizeof(addr));
+        n = sendto(sock, send_buff, SEND_LEN, 0, (struct sockaddr *)&addr, sizeof(addr));
         //printf("sent %d bytes\n", n);
         if (n < 0)
         {
@@ -90,27 +116,7 @@ int main(int argc, char **argv)
             close(sock);
             break;
         }
-        n = recvfrom(sock, buff, BUF_LEN - 1, 0, (struct sockaddr *)&addr, &len);
-        if (n>0)
-        {
-            buff[n] = 0;
-            //printf("received %d bytes\n", n);
-            //puts(buff);
-        }
-        else if (n == 0)
-        {
-            //printf("server closed\n");
-            //close(sock);
-            //break;
-        }
-        else if (n == -1)
-        {
-            //perror("recvfrom");
-            //close(sock);
-            //break;
-        }
-        //printf("res %d\n", n);
-        //usleep(4500);
+        n = recvfrom(sock, recv_buff, BUF_LEN - 1, 0, (struct sockaddr *)&addr, &len);
         gettimeofday(&end, 0);
         int ms = time_subtract(&start, &end);
         packet_cnt++;
@@ -118,13 +124,16 @@ int main(int argc, char **argv)
             loss_cnt++;
             ms = -1;
         } else {
+            if (memcmp(recv_buff, send_buff, n)) {
+                printf("error!!!!\n");
+            }
             if (ms >= 200) {
                 long_time_cnt++;
             }
         }
-        printf("%4d ms, %6d total packets, %6d loss packets, %6d >200ms packets\n", ms, packet_cnt, loss_cnt, long_time_cnt);
-        sleep(1);
+        printf("%s UDP服务器：%s:%s, 数据大小：%d 字节, 本次延迟：%3d 毫秒, 累计发包数: %4d, 累计丢包数：%4d, 高延迟包数(>200ms)：%4d\n",
+               current, host, port, SEND_LEN, ms, packet_cnt, loss_cnt, long_time_cnt);
+        usleep(ping_interval);
     }
-    
     return 0;
 }
