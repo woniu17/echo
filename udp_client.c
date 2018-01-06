@@ -46,7 +46,12 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        printf("Usage: %s ip port [data_len] [ping_interval]", argv[0]);
+        printf("Usage: %s ip port [udp_len] [ping_interval] [udp_cnt] [round_cnt]\n", argv[0]);
+        printf("该程序会向目标(ip:port)发送定长的UDP报文进行探测，探测的参数如下:\n");
+        printf("[udp_len] 每个UDP报文的字节数\n");
+        printf("[ping_interval] 探测的间隔，单位毫秒\n");
+        printf("[udp_cnt] 每次探测发送的报文数\n");
+        printf("[round_cnt] 探测的次数\n");
         exit(1);
     }
     printf("This is a UDP client\n");
@@ -58,25 +63,36 @@ int main(int argc, char **argv)
         perror("socket");
         exit(1);
     }
+
+    const uint32_t BUF_LEN = 2048;
+    const uint32_t MAX_UDP_CNT = 200;
+    uint32_t SEND_LEN = 1400;
+
     char *host = argv[1];
     char *port = argv[2];
-    char *data_len = "1400";
-    char *interval = "0";
-    if (argc >= 4) data_len = argv[3];
-    if (argc >= 5) interval = argv[4];
+    uint32_t udp_len = 1400;
+    uint32_t ping_interval = 0;
+    uint32_t udp_cnt = 1;
+    uint32_t round_cnt = (uint32_t)-1;
+    if (argc >= 4) udp_len = atoi(argv[3]);
+    if (argc >= 5) ping_interval = atoi(argv[4]);
+    if (argc >= 6) udp_cnt = atoi(argv[5]);
+    if (argc >= 7) round_cnt = atoi(argv[6]);
 
-    const int BUF_LEN = 2048;
-    int SEND_LEN = 1400;
-    int ping_interval = 0;
+    if (udp_cnt > MAX_UDP_CNT) {
+        udp_cnt = MAX_UDP_CNT;
+    }
+    if (0 == round_cnt) {
+        printf("round_cnt == 0\n");
+        exit(0);
+    }
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr(host);
     addr.sin_port = htons(atoi(port));
-    SEND_LEN = atoi(data_len);
-    ping_interval = atoi(interval) * 1000;
     if (addr.sin_addr.s_addr == INADDR_NONE)
     {
-        printf("Incorrect ip address!");
+        printf("Incorrect ip address!\n");
         close(sock);
         exit(1);
     }
@@ -85,55 +101,76 @@ int main(int argc, char **argv)
     tv.tv_sec = 2;
     tv.tv_usec = 0;
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-         printf("socket option  SO_RCVTIMEO not support\n");
+         printf("socket option SO_RCVTIMEO not support\n");
          return 0;
     }
 
-    int i;
+    uint32_t i, j;
     char current[100];
-    char send_buff[BUF_LEN];
-    char recv_buff[BUF_LEN];
+    unsigned char send_buff[MAX_UDP_CNT][BUF_LEN];
+    unsigned char recv_buff[BUF_LEN];
     unsigned int len = sizeof(addr);
     struct timeval start, end;
     int packet_cnt = 0;
     int loss_cnt = 0;
     int long_time_cnt = 0;
-    int d = port[0];
-    d = 'a';
-    printf("UDP包数据内容：%d*%d, 探测间隔：%s 毫秒\n", d, SEND_LEN, interval);
-    while (1)
-    {
-        for (i = 0; i < SEND_LEN; i++) { send_buff[i] = d + i; }
-        send_buff[i] = 0;
+    unsigned char d = 0;
+    SEND_LEN = udp_cnt;
+    printf("UDP包数据内容：%d*%d, 探测间隔：%d 毫秒\n", d, SEND_LEN, ping_interval);
+    for (i = 0; i < MAX_UDP_CNT; i++) {
+        for (j = 0; j < SEND_LEN; j++) {
+            send_buff[i][j] = (unsigned char)(d + i);
+        }
+    }
+    while(1) {
         int n;
         get_now_time(current);
         gettimeofday(&start, 0);
-        n = sendto(sock, send_buff, SEND_LEN, 0, (struct sockaddr *)&addr, sizeof(addr));
-        //printf("sent %d bytes\n", n);
-        if (n < 0)
-        {
-            perror("sendto");
-            close(sock);
-            break;
+        for (i = 0; i < udp_cnt; i++) {
+            n = sendto(sock, send_buff[i], SEND_LEN, 0, (struct sockaddr *)&addr, sizeof(addr));
+            //printf("sent %d bytes\n", n);
+            if (n < 0)
+            {
+                perror("sendto");
+                close(sock);
+                exit(1);
+            }
+            packet_cnt++;
         }
-        n = recvfrom(sock, recv_buff, BUF_LEN - 1, 0, (struct sockaddr *)&addr, &len);
+        uint32_t recv_udp_cnt = 0;
+        for (i = 0; i < udp_cnt; i++) {
+            n = recvfrom(sock, recv_buff, BUF_LEN - 1, 0, (struct sockaddr *)&addr, &len);
+            if (n <= 0) {
+                break;
+            }
+            if (n != (int)SEND_LEN) {
+                printf("get wrong udp packet!!!!\n");
+                continue;
+            }
+            unsigned char recv_char = recv_buff[0];
+            if (recv_char < d || recv_char >= d + udp_cnt) {
+                printf("get wrong udp packet!!!!\n");
+                continue;
+            }
+            if (memcmp(recv_buff, send_buff[recv_char -d], SEND_LEN)) {
+                printf("get wrong udp packet!!!!\n");
+                continue;
+            }
+            recv_udp_cnt++;
+        }
+        loss_cnt += udp_cnt - recv_udp_cnt;
         gettimeofday(&end, 0);
         int ms = time_subtract(&start, &end);
-        packet_cnt++;
-        if (n < SEND_LEN) {
-            loss_cnt++;
-            ms = -1;
-        } else {
-            if (memcmp(recv_buff, send_buff, n)) {
-                printf("error!!!!\n");
-            }
-            if (ms >= 200) {
-                long_time_cnt++;
-            }
+        if (udp_cnt > recv_udp_cnt && ms >= 200) {
+            long_time_cnt++;
         }
         printf("%s UDP服务器：%s:%s, 数据大小：%d 字节, 本次延迟：%3d 毫秒, 累计发包数: %4d, 累计丢包数：%4d, 高延迟包数(>200ms)：%4d\n",
                current, host, port, SEND_LEN, ms, packet_cnt, loss_cnt, long_time_cnt);
-        usleep(ping_interval);
+        round_cnt--;
+        if (0 == round_cnt) {
+            break;
+        }
+        usleep(ping_interval * 1000);
     }
     return 0;
 }
