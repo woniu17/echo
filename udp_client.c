@@ -42,6 +42,7 @@ uint32_t udp_cnt = MAX_UDP_CNT;
 
 int send_packet_cnt = 0;
 
+int send_flag = 1;
 
 uint64_t
 get_current_msec()
@@ -108,6 +109,8 @@ send_thread()
     uint32_t i, j;
     char current[100];
     for (i = 0; i < udp_cnt; i++) {
+        while(0 == send_flag) {
+        }
         unsigned char send_buff[BUF_LEN];
         uint32_t send_len = get_udp_len();
         uint32_t send_sn = i;
@@ -303,6 +306,16 @@ int main(int argc, char **argv)
        printf("线程2创建失败!\n");
        exit(1);
     }
+    char c;
+    while(c = getchar()) {
+        if ('\n' == c) {
+            send_flag = 1 - send_flag;
+            if (0 == send_flag) {
+                printf("暂停发送，按回车键继续...\n");
+            }
+        }
+    }
+    printf("hello\n");
     if(thread[0] != 0)
     {
         pthread_join(thread[0],NULL);
