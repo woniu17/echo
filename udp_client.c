@@ -14,10 +14,34 @@
 #define BUF_LEN (2048)
 #define MAX_UDP_CNT (100 * 1000 * 1000) //1亿 100MB
 
-typedef struct system_time_s {
-	time_t sec;
-	uint32_t msec;
-} system_time_t;
+#define UDP_LEN_SIZE (4)
+#define UDP_SN_SIZE (4)
+#define UDP_TS_SIZE (8)
+#define UDP_HEADER_SIZE (UDP_LEN_SIZE + UDP_SN_SIZE + UDP_TS_SIZE)
+
+#define UDP_LEN_OFFSET (0)
+#define UDP_SN_OFFSET (UDP_LEN_SIZE)
+#define UDP_TS_OFFSET (UDP_LEN_SIZE + UDP_SN_SIZE)
+#define UDP_DATA_OFFSET (UDP_HEADER_SIZE)
+
+#define MIN_UDP_LEN (UDP_HEADER_SIZE)
+#define MAX_UDP_LEN (1400)
+
+
+struct sockaddr_in addr;
+int sock;
+
+char *host;
+char *port;
+
+uint32_t min_udp_len = MIN_UDP_LEN;
+uint32_t max_udp_len = MAX_UDP_LEN;
+uint32_t min_ping_interval = 10; // 毫秒
+uint32_t max_ping_interval = 100; // 毫秒
+uint32_t udp_cnt = MAX_UDP_CNT;
+
+int send_packet_cnt = 0;
+
 
 uint64_t
 get_current_msec()
@@ -34,8 +58,8 @@ get_current_msec()
 
 }
 
-
-void get_now_time(char cur[])
+void
+get_now_time(char cur[])
 {
     struct timespec time;
     clock_gettime(CLOCK_REALTIME, &time);  //获取相对于1970到现在的秒数
@@ -45,41 +69,37 @@ void get_now_time(char cur[])
       t.tm_hour, t.tm_min, t.tm_sec);
 }
 
-int time_subtract(struct timeval *x, struct timeval *y)
+int is_srandom = 0;
+uint32_t
+get_ping_interval()
 {
-    int ms;
-    if ( x->tv_sec > y->tv_sec )
-        return -1;
-    if ((x->tv_sec==y->tv_sec) && (x->tv_usec > y->tv_usec))
-        return -1;
-
-    int sec = y->tv_sec-x->tv_sec;
-    int us = y->tv_usec-x->tv_usec;
-
-    if (us < 0)
-    {
-        sec--;
-        us += 1000000;
+    if (0 == is_srandom) {
+        srandom((uint32_t)time(NULL));
+        is_srandom = 1;
     }
-    ms = sec * 1000;
-    ms += us / 1000;
-
-    return ms;
+    uint32_t delta = max_ping_interval - min_ping_interval;
+    uint32_t r = random() % delta;
+    //printf("min %u max %u delta %u r %u\n", min_ping_interval, max_ping_interval, delta, r);
+    return min_ping_interval + r;
 }
 
-struct sockaddr_in addr;
-int sock;
+uint32_t
+get_udp_len()
+{
+    if (min_udp_len == max_udp_len) {
+        return min_udp_len;
+    }
+    if (0 == is_srandom) {
+        srandom((uint32_t)time(NULL));
+        is_srandom = 1;
+    }
+    uint32_t delta = max_udp_len - min_udp_len;
+    uint32_t r = random() % delta;
+    r -= r % 4;
+    //printf("min %u max %u delta %u r %u\n", min_udp_len, max_udp_len, delta, r);
+    return min_udp_len + r;
+}
 
-char *host;
-char *port;
-
-uint32_t udp_len = 1400;
-uint32_t min_ping_interval = 10; // 毫秒
-uint32_t max_ping_interval = 100; // 毫秒
-uint32_t udp_cnt = MAX_UDP_CNT;
-
-struct timeval start, end;
-int send_packet_cnt = 0;
 
 void *
 send_thread()
@@ -89,14 +109,19 @@ send_thread()
     char current[100];
     for (i = 0; i < udp_cnt; i++) {
         unsigned char send_buff[BUF_LEN];
+        uint32_t send_len = get_udp_len();
         uint32_t send_sn = i;
-        for (j = 0; j < udp_len - 8; j += 4) {
+        uint64_t current_mesec = get_current_msec();
+
+        *(uint32_t *) (send_buff + UDP_LEN_OFFSET) = send_len;
+        *(uint32_t *) (send_buff + UDP_SN_OFFSET) = send_sn;
+        *(uint64_t *) (send_buff + UDP_TS_OFFSET) = current_mesec;
+        for (j = UDP_DATA_OFFSET; j < send_len; j += 4) {
             *(uint32_t *) (send_buff + j) = send_sn;
         }
-        uint64_t current_mesec = get_current_msec();
-        memcpy(send_buff + udp_len - 8, &current_mesec, sizeof(current_mesec));
+
         send_packet_cnt++;
-        int n = sendto(sock, send_buff, udp_len, 0, (struct sockaddr *)&addr, sizeof(addr));
+        int n = sendto(sock, send_buff, send_len, 0, (struct sockaddr *)&addr, sizeof(addr));
         //printf("send_sn %u start_ts %ld\n", send_sn, current_mesec);
         if (n < 0)
         {
@@ -104,7 +129,7 @@ send_thread()
             close(sock);
             exit(1);
         }
-        uint32_t ping_interval = (min_ping_interval + max_ping_interval) / 2;
+        uint32_t ping_interval = get_ping_interval();
         usleep(ping_interval * 1000);
     }
     pthread_exit(NULL);
@@ -137,11 +162,21 @@ recv_thread()
             printf("n == 0!!!!\n");
             continue;
         }
-        if (n != (int)udp_len) {
-            printf("get wrong udp packet n = %d udp_len %u!!!!\n", n, udp_len);
+        if (n < MIN_UDP_LEN || n > MAX_UDP_LEN) {
+            printf("get wrong udp packet n = %d max_udp_len range [%u, %u]!!!!\n",
+                n, MIN_UDP_LEN, MAX_UDP_CNT);
             exit(1);
         }
-        uint32_t recv_sn = *(uint32_t *) (recv_buff + 0);
+
+        uint32_t recv_udp_len = *(uint32_t *) (recv_buff + UDP_LEN_OFFSET);
+        uint32_t recv_sn = *(uint32_t *) (recv_buff + UDP_SN_OFFSET);
+        uint64_t start_ts = *(uint64_t *) (recv_buff + UDP_TS_OFFSET);
+
+        if (recv_udp_len != n) {
+            printf("wrong udp packet n = %d max_udp_len %u!!!!\n", n, recv_udp_len);
+            exit(1);
+        }
+
         uint32_t no_send_sn = send_packet_cnt;
         if (recv_sn >= no_send_sn) {
             printf("get wrong udp packet recv_sn %u no_send_sn %u!!!!\n",
@@ -149,19 +184,19 @@ recv_thread()
             exit(1);
         }
         if (recv_flag[recv_sn] > 0) {
-            printf("get duplicate udp packet recv_sn %u!!!!\n", recv_sn);
+            printf("duplicate udp packet recv_sn %u!!!!\n", recv_sn);
             exit(1);
         }
 
-        for (i = 0; i < udp_len - 8; i += 4) {
+        for (i = UDP_DATA_OFFSET; i < recv_udp_len; i += 4) {
             uint32_t content = *(uint32_t *) (recv_buff + i);
             if (content != recv_sn){
-                printf("get wrong udp packet recv_sn %u content %u i %u!!!!\n",
-                    recv_sn, content, i);
+                printf("wrong udp packet len %u recv_sn %u content %u i %u!!!!\n",
+                    recv_udp_len, recv_sn, content, i);
                 exit(1);
             }
         }
-        uint64_t start_ts = *(uint64_t *) (recv_buff + udp_len - 8);
+
         uint64_t end_ts = get_current_msec();
         uint64_t ms = end_ts - start_ts;
         //printf("recv_sn %u start_ts %ld end_ts %ld\n", recv_sn, start_ts, end_ts);
@@ -174,10 +209,10 @@ recv_thread()
         if (ms >= 200) {
             long_time_cnt++;
         }
-        printf("%s 服务器：%s:%s, 报文序号：%7d, 大小：%d 字节, 延迟：%4ld 毫秒, "
+        printf("%s 服务器：%s:%s, 报文序号：%7d, 大小：%4d 字节, 延迟：%4ld 毫秒, "
                 "已发数: %7d, 已收数: %7d, 未收数：%4d, 高延迟包数(>200ms)：%4d\n",
-               current, host, port, recv_sn, udp_len, ms, send_packet_cnt, recv_packet_cnt,
-               send_packet_cnt - recv_packet_cnt, long_time_cnt);
+               current, host, port, recv_sn, recv_udp_len, ms, send_packet_cnt,
+               recv_packet_cnt, send_packet_cnt - recv_packet_cnt, long_time_cnt);
         if (recv_packet_cnt == udp_cnt) {
             printf("接收完成！！！\n");
             exit(0);
@@ -192,9 +227,9 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        printf("Usage: %s ip port [udp_len] [udp_cnt] [min_ping_interval] [max_ping_interval]\n", argv[0]);
+        printf("Usage: %s ip port [max_udp_len] [udp_cnt] [min_ping_interval] [max_ping_interval]\n", argv[0]);
         printf("该程序会向目标(ip:port)发送定长的UDP报文进行探测，探测的参数如下:\n");
-        printf("[udp_len] 每个UDP报文的字节数，最小值为12，最大值为1400，必须是4的倍数\n");
+        printf("[min_udp_len][max_udp_len] UDP报文字节数范围为[%u, %u]且必须是4的倍数\n", MIN_UDP_LEN, MAX_UDP_LEN);
         printf("[udp_cnt] 发送的报文数\n");
         printf("[min_ping_interval] 最小探测时间间隔，单位毫秒\n");
         printf("[max_ping_interval] 最大探测时间间隔，单位毫秒\n");
@@ -209,10 +244,16 @@ int main(int argc, char **argv)
     }
     host = argv[1];
     port = argv[2];
-    if (argc >= 4) udp_len = atoi(argv[3]);
-    if (argc >= 5) udp_cnt = atoi(argv[4]);
-    if (argc >= 6) min_ping_interval = atoi(argv[5]);
-    if (argc >= 7) max_ping_interval = atoi(argv[6]);
+    if (argc >= 4) min_udp_len = atoi(argv[3]);
+    if (argc >= 5) max_udp_len = atoi(argv[4]);
+    if (argc >= 6) udp_cnt = atoi(argv[5]);
+    if (argc >= 7) min_ping_interval = atoi(argv[6]);
+    if (argc >= 8) max_ping_interval = atoi(argv[7]);
+
+    printf("UDP服务器：%s:%s, 报文大小范围：[%u, %u] 字节, 报文数：%u, "
+            "探测时间间隔：[%u, %u] 毫秒\n",
+           host, port, min_udp_len, max_udp_len,
+           udp_cnt, min_ping_interval, max_ping_interval);
 
     if (0 == udp_cnt || udp_cnt > MAX_UDP_CNT) {
 		printf("发送的报文数%u 必须大于0，小于%u!!\n", udp_cnt, MAX_UDP_CNT);
@@ -222,8 +263,12 @@ int main(int argc, char **argv)
 		printf("最小探测时间间隔 %u > 最大时间间隔 %u\n", min_ping_interval, max_ping_interval);
 		exit(1);
 	}
-	if (udp_len < 12 || udp_len > 1400 || 0 != udp_len % 4) {
-		printf("字节数 %u，最小值为12，最大值为1400，必须是4的倍数\n", udp_len);
+	if (min_udp_len > max_udp_len
+        || min_udp_len < MIN_UDP_LEN
+        || max_udp_len > MAX_UDP_LEN
+        || 0 != min_udp_len % 4
+        || 0 != max_udp_len % 4) {
+        printf("[min_udp_len][max_udp_len] UDP报文字节数范围为[%u, %u]且必须是4的倍数\n", MIN_UDP_LEN, MAX_UDP_LEN);
 		exit(1);
 	}
 
@@ -245,9 +290,6 @@ int main(int argc, char **argv)
          exit(1);
     }
     */
-    printf("UDP服务器：%s:%s, 报文大小：%u 字节, 报文数：%u, "
-            "探测时间间隔：[%u, %u] 毫秒\n",
-           host, port, udp_len, udp_cnt, min_ping_interval, max_ping_interval);
     pthread_t thread[2];
     int ret;
     memset(&thread, 0, sizeof(thread));
