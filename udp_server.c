@@ -9,17 +9,20 @@
 
 int main(int argc, char **argv)
 {
-    if (argc != 2)
+    if (argc != 3)
     {
-        printf("Usage: %s port\n", argv[0]);
+        printf("Usage: %s ip port\n", argv[0]);
         exit(1);
     }
+    char *host = argv[1];
+    char *port = argv[2];
     printf("Welcome! This is a UDP server, I can only received message from client and reply with same message\n");
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(atoi(argv[1]));
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_addr.s_addr = inet_addr(host);
+    //addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(atoi(port));
 
     int sock;
     if ( (sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
