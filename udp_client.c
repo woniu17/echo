@@ -167,7 +167,7 @@ recv_thread()
         }
         if (n < MIN_UDP_LEN || n > MAX_UDP_LEN) {
             printf("get wrong udp packet n = %d max_udp_len range [%u, %u]!!!!\n",
-                n, MIN_UDP_LEN, MAX_UDP_CNT);
+                n, MIN_UDP_LEN, MAX_UDP_LEN);
             exit(1);
         }
 
@@ -184,20 +184,22 @@ recv_thread()
         if (recv_sn >= no_send_sn) {
             printf("get wrong udp packet recv_sn %u no_send_sn %u!!!!\n",
                 recv_sn, no_send_sn);
-            exit(1);
         }
         if (recv_flag[recv_sn] > 0) {
             printf("duplicate udp packet recv_sn %u!!!!\n", recv_sn);
             exit(1);
         }
-
+        int content_error = 0;
         for (i = UDP_DATA_OFFSET; i < recv_udp_len; i += 4) {
             uint32_t content = *(uint32_t *) (recv_buff + i);
             if (content != recv_sn){
+                content_error = 1;
                 printf("wrong udp packet len %u recv_sn %u content %u i %u!!!!\n",
                     recv_udp_len, recv_sn, content, i);
-                exit(1);
             }
+        }
+        if (content_error > 0) {
+            exit(1);
         }
 
         uint64_t end_ts = get_current_msec();
@@ -212,10 +214,12 @@ recv_thread()
         if (ms >= 200) {
             long_time_cnt++;
         }
-        printf("%s 服务器：%s:%s, 报文序号：%7d, 大小：%4d 字节, 延迟：%4ld 毫秒, "
-                "已发数: %7d, 已收数: %7d, 未收数：%4d, 高延迟包数(>200ms)：%4d\n",
+        uint32_t unrecv_cnt = send_packet_cnt - recv_packet_cnt;
+        uint32_t unrecv_per = unrecv_cnt * 10000 / send_packet_cnt;
+        printf("%s 服务器：%s:%s, 报文序号：%d, 大小：%4d 字节, 延迟：%4ld 毫秒, "
+                "已发数: %d, 已收数: %d, 未收数：%d(%d/10000), 高延迟包数(>200ms)：%d\n",
                current, host, port, recv_sn, recv_udp_len, ms, send_packet_cnt,
-               recv_packet_cnt, send_packet_cnt - recv_packet_cnt, long_time_cnt);
+               recv_packet_cnt, unrecv_cnt , unrecv_per, long_time_cnt);
         if (recv_packet_cnt == udp_cnt) {
             printf("接收完成！！！\n");
             exit(0);
