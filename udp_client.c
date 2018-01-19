@@ -27,6 +27,10 @@
 #define MIN_UDP_LEN (UDP_HEADER_SIZE)
 #define MAX_UDP_LEN (1400)
 
+#define MAX_RECV_TIME (4000)
+
+#define max(val1, val2) ((val1 < val2) ? (val2) : (val1))
+#define min(val1, val2) ((val1 > val2) ? (val2) : (val1))
 
 struct sockaddr_in addr;
 int sock;
@@ -41,6 +45,7 @@ uint32_t max_ping_interval = 100; // 毫秒
 uint32_t udp_cnt = MAX_UDP_CNT;
 
 int send_packet_cnt = 0;
+int recv_packet_cnt = 0;
 
 int send_flag = 1;
 
@@ -66,8 +71,8 @@ get_now_time(char cur[])
     clock_gettime(CLOCK_REALTIME, &time);  //获取相对于1970到现在的秒数
     struct tm t;
     localtime_r(&time.tv_sec, &t);
-    sprintf(cur, "%04d/%02d/%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon+1, t.tm_mday,
-      t.tm_hour, t.tm_min, t.tm_sec);
+    sprintf(cur, "%04d/%02d/%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon+1,
+      t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
 }
 
 int is_srandom = 0;
@@ -138,13 +143,51 @@ send_thread()
     pthread_exit(NULL);
 }
 
+void
+print_recv_info(uint32_t recv_sn, uint32_t recv_len, uint64_t recv_time)
+{
+
+    static char current[100];
+    static uint32_t recv_time_cnt[MAX_RECV_TIME] = {0};
+    static uint64_t all_recv_time = 0;
+    static uint64_t avg_recv_time = 0;
+    static uint64_t max_recv_time = 0;
+
+    uint64_t mid_recv_time = 0;
+
+    get_now_time(current);
+
+    all_recv_time += recv_time;
+    avg_recv_time = all_recv_time / recv_packet_cnt;
+
+    uint64_t index = min(recv_time, MAX_RECV_TIME - 1);
+    recv_time_cnt[index]++;
+    uint32_t i;
+    uint32_t cnt = 0;
+    for (i = 0; i < MAX_RECV_TIME; i++) {
+        cnt += recv_time_cnt[i];
+        if (cnt * 2 >= recv_packet_cnt) {
+            break;
+        }
+    }
+    mid_recv_time = i;
+
+    max_recv_time = max(max_recv_time, recv_time);
+
+    uint32_t unrecv_cnt = send_packet_cnt - recv_packet_cnt;
+    uint32_t unrecv_per = unrecv_cnt * 10000 / send_packet_cnt;
+    printf("%s %s:%s [序号：%d %4d 字节 %4ld 毫秒]"
+            " 收/发数: %d|%d 未收：%d(%d/10000) "
+            "延迟统计：平均 %ld 中值 %ld 最大 %ld\n",
+           current, host, port, recv_sn, recv_len, recv_time,
+           send_packet_cnt, recv_packet_cnt, unrecv_cnt , unrecv_per,
+           avg_recv_time, mid_recv_time, max_recv_time);
+}
+
 void *
 recv_thread()
 {
     //printf("start recv\n");
-    char current[100];
-    int recv_packet_cnt = 0;
-    int long_time_cnt = 0;
     uint8_t *recv_flag = calloc(udp_cnt, sizeof(uint8_t));
     if (NULL == recv_flag) {
         printf("udp_cnt %u 内存分配失败！！！\n");
@@ -153,7 +196,6 @@ recv_thread()
     uint32_t i;
     while(1) {
         int n;
-        get_now_time(current);
         unsigned char recv_buff[BUF_LEN] = {0};
         unsigned int len = sizeof(addr);
         n = recvfrom(sock, recv_buff, BUF_LEN - 1, 0, (struct sockaddr *)&addr, &len);
@@ -171,12 +213,12 @@ recv_thread()
             exit(1);
         }
 
-        uint32_t recv_udp_len = *(uint32_t *) (recv_buff + UDP_LEN_OFFSET);
+        uint32_t recv_len = *(uint32_t *) (recv_buff + UDP_LEN_OFFSET);
         uint32_t recv_sn = *(uint32_t *) (recv_buff + UDP_SN_OFFSET);
         uint64_t start_ts = *(uint64_t *) (recv_buff + UDP_TS_OFFSET);
 
-        if (recv_udp_len != n) {
-            printf("wrong udp packet n = %d max_udp_len %u!!!!\n", n, recv_udp_len);
+        if (recv_len != n) {
+            printf("wrong udp packet n = %d max_udp_len %u!!!!\n", n, recv_len);
             exit(1);
         }
 
@@ -190,12 +232,12 @@ recv_thread()
             exit(1);
         }
         int content_error = 0;
-        for (i = UDP_DATA_OFFSET; i < recv_udp_len; i += 4) {
+        for (i = UDP_DATA_OFFSET; i < recv_len; i += 4) {
             uint32_t content = *(uint32_t *) (recv_buff + i);
             if (content != recv_sn){
                 content_error = 1;
                 printf("wrong udp packet len %u recv_sn %u content %u i %u!!!!\n",
-                    recv_udp_len, recv_sn, content, i);
+                    recv_len, recv_sn, content, i);
             }
         }
         if (content_error > 0) {
@@ -203,7 +245,6 @@ recv_thread()
         }
 
         uint64_t end_ts = get_current_msec();
-        uint64_t ms = end_ts - start_ts;
         //printf("recv_sn %u start_ts %ld end_ts %ld\n", recv_sn, start_ts, end_ts);
         if (end_ts < start_ts) {
             printf("start timestamp error!!!!\n");
@@ -211,15 +252,9 @@ recv_thread()
         }
         recv_flag[recv_sn] = 1;
         recv_packet_cnt++;
-        if (ms >= 200) {
-            long_time_cnt++;
-        }
-        uint32_t unrecv_cnt = send_packet_cnt - recv_packet_cnt;
-        uint32_t unrecv_per = unrecv_cnt * 10000 / send_packet_cnt;
-        printf("%s 服务器：%s:%s, 报文序号：%d, 大小：%4d 字节, 延迟：%4ld 毫秒, "
-                "已发数: %d, 已收数: %d, 未收数：%d(%d/10000), 高延迟包数(>200ms)：%d\n",
-               current, host, port, recv_sn, recv_udp_len, ms, send_packet_cnt,
-               recv_packet_cnt, unrecv_cnt , unrecv_per, long_time_cnt);
+        uint64_t recv_time = end_ts - start_ts;
+        print_recv_info(recv_sn, recv_len, recv_time);
+
         if (recv_packet_cnt == udp_cnt) {
             printf("接收完成！！！\n");
             exit(0);
