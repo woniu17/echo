@@ -79,6 +79,9 @@ int is_srandom = 0;
 uint32_t
 get_ping_interval()
 {
+    if (max_ping_interval == min_ping_interval) {
+        return min_ping_interval;
+    }
     if (0 == is_srandom) {
         srandom((uint32_t)time(NULL));
         is_srandom = 1;
