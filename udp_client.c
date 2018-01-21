@@ -179,9 +179,9 @@ print_recv_info(uint32_t recv_sn, uint32_t recv_len, uint64_t recv_time)
 
     uint32_t unrecv_cnt = send_packet_cnt - recv_packet_cnt;
     uint32_t unrecv_per = unrecv_cnt * 10000 / send_packet_cnt;
-    printf("%s %s:%s [序号：%d %4d 字节 %4ld 毫秒]"
-            " 收|发数: %d|%d 未收：%d(%d/10000) "
-            "延迟统计：平均 %ld 中值 %ld 最大 %ld\n",
+    printf("%s %s:%s [序号: %d %4d 字节 %4ld 毫秒]"
+            " 收/发数: %d/%d 未收: %d(%d/10000) "
+            "平均/中值/最大延迟: %ld/%ld/%ld\n",
            current, host, port, recv_sn, recv_len, recv_time,
            send_packet_cnt, recv_packet_cnt, unrecv_cnt , unrecv_per,
            avg_recv_time, mid_recv_time, max_recv_time);
