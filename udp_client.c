@@ -44,8 +44,8 @@ uint32_t min_ping_interval = 10; // 毫秒
 uint32_t max_ping_interval = 100; // 毫秒
 uint32_t udp_cnt = MAX_UDP_CNT;
 
-int send_packet_cnt = 0;
-int recv_packet_cnt = 0;
+uint32_t send_packet_cnt = 0;
+uint32_t recv_packet_cnt = 0;
 
 int send_flag = 1;
 
@@ -115,7 +115,6 @@ send_thread()
 {
     //printf("start send\n");
     uint32_t i, j;
-    char current[100];
     for (i = 0; i < udp_cnt; i++) {
         while(0 == send_flag) {
         }
@@ -187,13 +186,55 @@ print_recv_info(uint32_t recv_sn, uint32_t recv_len, uint64_t recv_time)
            avg_recv_time, mid_recv_time, max_recv_time);
 }
 
+void
+check_recv_buff(uint8_t recv_flag[], unsigned char *recv_buff, int n)
+{
+    if (n < MIN_UDP_LEN || n > MAX_UDP_LEN) {
+        printf("get wrong udp packet n = %d max_udp_len range [%u, %u]!!!!\n",
+            n, MIN_UDP_LEN, MAX_UDP_LEN);
+        exit(1);
+    }
+
+    uint32_t recv_len = *(uint32_t *) (recv_buff + UDP_LEN_OFFSET);
+    uint32_t recv_sn = *(uint32_t *) (recv_buff + UDP_SN_OFFSET);
+
+    if (recv_len != (uint32_t)n) {
+        printf("wrong udp packet n = %d max_udp_len %u!!!!\n", n, recv_len);
+        exit(1);
+    }
+
+    if (recv_sn >= MAX_UDP_CNT) {
+        printf("get wrong udp packet recv_sn %u max_udp_sn %u!!!!\n",
+            recv_sn, MAX_UDP_CNT);
+    }
+    if (recv_flag[recv_sn] > 0) {
+        printf("duplicate udp packet recv_sn %u!!!!\n", recv_sn);
+        exit(1);
+    }
+    uint32_t i;
+    int content_error = 0;
+    for (i = UDP_DATA_OFFSET; i < recv_len; i += 4) {
+        uint32_t content = *(uint32_t *) (recv_buff + i);
+        if (content != recv_sn){
+            content_error = 1;
+            printf("wrong udp packet len %u recv_sn %u content %u i %u!!!!\n",
+                recv_len, recv_sn, content, i);
+        }
+    }
+    if (content_error > 0) {
+        exit(1);
+    }
+
+    recv_flag[recv_sn] = 1;
+}
+
 void *
 recv_thread()
 {
     //printf("start recv\n");
     uint8_t *recv_flag = calloc(udp_cnt, sizeof(uint8_t));
     if (NULL == recv_flag) {
-        printf("udp_cnt %u 内存分配失败！！！\n");
+        printf("udp_cnt %u 内存分配失败！！！\n", udp_cnt);
         exit(1);
     }
     uint32_t i;
@@ -210,51 +251,20 @@ recv_thread()
             printf("n == 0!!!!\n");
             continue;
         }
-        if (n < MIN_UDP_LEN || n > MAX_UDP_LEN) {
-            printf("get wrong udp packet n = %d max_udp_len range [%u, %u]!!!!\n",
-                n, MIN_UDP_LEN, MAX_UDP_LEN);
-            exit(1);
-        }
 
-        uint32_t recv_len = *(uint32_t *) (recv_buff + UDP_LEN_OFFSET);
+        check_recv_buff(recv_flag, recv_buff, n);
         uint32_t recv_sn = *(uint32_t *) (recv_buff + UDP_SN_OFFSET);
+        uint32_t recv_len = *(uint32_t *) (recv_buff + UDP_LEN_OFFSET);
         uint64_t start_ts = *(uint64_t *) (recv_buff + UDP_TS_OFFSET);
-
-        if (recv_len != n) {
-            printf("wrong udp packet n = %d max_udp_len %u!!!!\n", n, recv_len);
-            exit(1);
-        }
-
-        uint32_t no_send_sn = send_packet_cnt;
-        if (recv_sn >= no_send_sn) {
-            printf("get wrong udp packet recv_sn %u no_send_sn %u!!!!\n",
-                recv_sn, no_send_sn);
-        }
-        if (recv_flag[recv_sn] > 0) {
-            printf("duplicate udp packet recv_sn %u!!!!\n", recv_sn);
-            exit(1);
-        }
-        int content_error = 0;
-        for (i = UDP_DATA_OFFSET; i < recv_len; i += 4) {
-            uint32_t content = *(uint32_t *) (recv_buff + i);
-            if (content != recv_sn){
-                content_error = 1;
-                printf("wrong udp packet len %u recv_sn %u content %u i %u!!!!\n",
-                    recv_len, recv_sn, content, i);
-            }
-        }
-        if (content_error > 0) {
-            exit(1);
-        }
-
         uint64_t end_ts = get_current_msec();
-        //printf("recv_sn %u start_ts %ld end_ts %ld\n", recv_sn, start_ts, end_ts);
+
         if (end_ts < start_ts) {
             printf("start timestamp error!!!!\n");
             exit(1);
         }
-        recv_flag[recv_sn] = 1;
+
         recv_packet_cnt++;
+
         uint64_t recv_time = end_ts - start_ts;
         print_recv_info(recv_sn, recv_len, recv_time);
 
@@ -303,22 +313,22 @@ int main(int argc, char **argv)
            udp_cnt, min_ping_interval, max_ping_interval);
 
     if (0 == udp_cnt || udp_cnt > MAX_UDP_CNT) {
-		printf("发送的报文数%u 必须大于0，小于%u!!\n", udp_cnt, MAX_UDP_CNT);
-		exit(1);
+        printf("发送的报文数%u 必须大于0，小于%u!!\n", udp_cnt, MAX_UDP_CNT);
+        exit(1);
     }
-	if (min_ping_interval > max_ping_interval) {
-		printf("最小探测时间间隔 %u > 最大时间间隔 %u\n", min_ping_interval, max_ping_interval);
-		exit(1);
-	}
-	if (min_udp_len > max_udp_len
+    if (min_ping_interval > max_ping_interval) {
+        printf("最小探测时间间隔 %u > 最大时间间隔 %u\n", min_ping_interval, max_ping_interval);
+        exit(1);
+    }
+    if (min_udp_len > max_udp_len
         || min_udp_len < MIN_UDP_LEN
         || max_udp_len > MAX_UDP_LEN
         || 0 != min_udp_len % 4
         || 0 != max_udp_len % 4) {
         printf("[min_udp_len][max_udp_len] UDP报文字节数范围为[%u, %u]，"
                 "且必须是4的倍数\n", MIN_UDP_LEN, MAX_UDP_LEN);
-		exit(1);
-	}
+        exit(1);
+    }
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr(host);
