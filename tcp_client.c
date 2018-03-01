@@ -1,105 +1,101 @@
-#include<stdlib.h>
-#include<stdio.h>
-#include<string.h>
-#include<netdb.h>
-#include<sys/types.h>
-#include<netinet/in.h>
-#include<sys/socket.h>
-#include<unistd.h>
-#include<arpa/inet.h>
-#include<errno.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <sys/time.h>
+#include <netdb.h>
+#include<stdio.h> //printf
+#include<string.h>    //strlen
+#include<sys/socket.h>    //socket
+#include<arpa/inet.h> //inet_addr
 
-int time_subtract(struct timeval *x, struct timeval *y)
+uint64_t
+get_current_msec()
 {
-    int ms;
-    if ( x->tv_sec > y->tv_sec )
-        return -1;
-    if ((x->tv_sec==y->tv_sec) && (x->tv_usec > y->tv_usec))
-        return -1;
+    struct timeval tv;
+    gettimeofday(&tv, 0);
 
-    int sec = y->tv_sec-x->tv_sec;
-    int us = y->tv_usec-x->tv_usec;
+    time_t sec = tv.tv_sec;
+    unsigned int msec = tv.tv_usec / 1000;
 
-    if (us < 0)
-    {
-        sec--;
-        us += 1000000;
-    }
-    ms = sec * 1000;
-    ms += us / 1000;
+    uint64_t current_msec = (uint64_t) sec * 1000 + msec;
+    //printf("sec %lu usec %u current_msec %lu\n", (uint64_t)sec, tv.tv_usec, current_msec);
+    return current_msec;
 
-    return ms;
 }
 
-
-int main(int argc,char *argv[])
+int main(int argc, char *argv[])
 {
-    int sockfd;
-    const int BUF_LEN = 2048;
-    const int DATA_LEN = 2048;
-    char sendbuffer[BUF_LEN];
-    char recvbuffer[BUF_LEN];
-    struct sockaddr_in server_addr;
-    struct hostent *host;
-    int portnumber,nbytes;
-    if (argc!=3)
-    {
-        fprintf(stderr,"Usage :%s hostname portnumber\a\n",argv[0]);
+    if (argc != 4) {
+        printf("usage: %s server_ip server_port send_rate\n", argv[0]);
         exit(1);
     }
-    if ((host=gethostbyname(argv[1]))==NULL)
-    {
-        herror("Get host name error\n");
+    char *server_ip = argv[1];
+    int server_port, send_rate;
+    if ((server_port = atoi(argv[2])) <= 0) {
+        printf("usage: %s server_ip server_port send_rate\n", argv[0]);
         exit(1);
     }
-    if ((portnumber=atoi(argv[2]))<0)
-    {
-        fprintf(stderr,"Usage:%s hostname portnumber\a\n",argv[0]);
+    if ((send_rate = atoi(argv[3])) <= 0) {
+        printf("usage: %s server_ip server_port send_rate\n", argv[0]);
         exit(1);
     }
-    if ((sockfd=socket(AF_INET,SOCK_STREAM,0))==-1)
-    {
-        fprintf(stderr,"Socket Error:%s\a\n",strerror(errno));
-        exit(1);
+    if (send_rate > 10 * 1024 * 1024) {
+        send_rate = 10 * 1024 * 1024;
+        printf("send_rate reset to 10MB!!!!!\n");
     }
-    bzero(&server_addr,sizeof(server_addr));
-    server_addr.sin_family=AF_INET;
-    server_addr.sin_port=htons(portnumber);
-    server_addr.sin_addr=*((struct in_addr *)host->h_addr);
-    if (connect(sockfd,(struct sockaddr *)(&server_addr),sizeof(struct sockaddr))==-1)
-    {
-       fprintf(stderr,"Connect error:%s\n",strerror(errno));
-       exit(1);
-    }
-    struct timeval timeout={10, 0};
-    int ret = setsockopt(sockfd,SOL_SOCKET,SO_SNDTIMEO,(const char*)&timeout,sizeof(timeout));
-    ret = setsockopt(sockfd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&timeout,sizeof(timeout));
-    struct timeval start, end;
-    int packet_cnt = 0;
-    int loss_cnt = 0;
-    int long_time_cnt = 0;
-    while (1)
-    {
-        int i;
-        for (i = 1; i < DATA_LEN; i++) { sendbuffer[i] = 'a'; }
-        gettimeofday(&start, 0);
+    printf("server %s:%d send_rate %d\n", server_ip, server_port, send_rate);
+    int sock;
+    struct sockaddr_in server_sockaddr;
 
-        int send_cnt = send(sockfd, sendbuffer, DATA_LEN, 0);
-        int recv_cnt = recv(sockfd, recvbuffer, DATA_LEN, 0);
+    //create socket
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (-1 == sock) {
+        printf("could not create socket\n");
+        exit(1);
+    }
 
-        gettimeofday(&end, 0);
-        int ms = time_subtract(&start, &end);
-        packet_cnt++;
-        if (send_cnt < DATA_LEN || recv_cnt < DATA_LEN) {
-            loss_cnt++;
-            ms = -1;
-        } else {
-            if (ms >= 200) {
-                long_time_cnt++;
-            }
+    server_sockaddr.sin_addr.s_addr = inet_addr(server_ip);
+    server_sockaddr.sin_family = AF_INET;
+    server_sockaddr.sin_port = htons(server_port);
+
+    //connect to remote server
+    if (connect(sock, (struct sockaddr *)&server_sockaddr, sizeof(server_sockaddr)) < 0)
+    {
+        perror("connect failed. error");
+        exit(1);
+    }
+
+    char send_buf[10 * 1024 * 1024 + 10];
+    for (int i = 0; i < 10 * 1024 * 1024; i++) {
+        send_buf[i] = 'a';
+    }
+
+    int send_size;
+    while(1) {
+        uint64_t start_ts = get_current_msec();
+        //send some data
+        if((send_size = send(sock, send_buf, send_rate, 0)) < 0)
+        {
+            printf("send failed\n");
+            exit(0);
         }
-        printf("%4d ms, %6d total packets, %6d loss packets, %6d >200ms packets\n", ms, packet_cnt, loss_cnt, long_time_cnt);
+        printf("start ts %lu send size %d\n", start_ts, send_size);
+        uint64_t end_ts = get_current_msec();
+        uint64_t delta  = end_ts - start_ts;
+        if (delta > 1000) {
+            printf("delta %lu\n", delta);
+            continue;
+        }
+        usleep((1000 - delta) * 1000);
+
     }
-    close(sockfd);
-    exit(0);
+
+    close(sock);
+    return 0;
 }
