@@ -182,7 +182,7 @@ print_recv_info(uint32_t recv_sn, uint32_t recv_len, uint64_t recv_time)
             " 收/发数: %d/%d 未收: %d(%d/10000) "
             "平均/中值/最大延迟: %ld/%ld/%ld\n",
            current, host, port, recv_sn, recv_len, recv_time,
-           send_packet_cnt, recv_packet_cnt, unrecv_cnt , unrecv_per,
+           recv_packet_cnt, send_packet_cnt, unrecv_cnt , unrecv_per,
            avg_recv_time, mid_recv_time, max_recv_time);
 }
 
@@ -282,12 +282,12 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        printf("Usage: %s ip port [max_udp_len] [udp_cnt] [min_ping_interval] "
-                "[max_ping_interval]\n", argv[0]);
+        printf("Usage: %s ip port [pkg_cnt] [min_pkg_size] [max_pkg_size] "
+                "[min_ping_interval] [max_ping_interval]\n", argv[0]);
         printf("该程序会向目标(ip:port)发送的UDP报文进行探测，探测的参数如下:\n");
-        printf("[min_udp_len][max_udp_len] UDP报文字节数范围为[%u, %u]，"
-                "且必须是4的倍数\n", MIN_UDP_LEN, MAX_UDP_LEN);
-        printf("[udp_cnt] 发送的报文数\n");
+        printf("[pkg_cnt] 发送的报文个数\n");
+        printf("[min_pkg_len][max_pkg_len] 指定每个UDP报文的大小范围，"
+                "大小范围为[%u, %u]字节，且必须是4的倍数\n", MIN_UDP_LEN, MAX_UDP_LEN);
         printf("[min_ping_interval] 最小探测时间间隔，单位毫秒\n");
         printf("[max_ping_interval] 最大探测时间间隔，单位毫秒\n");
         exit(1);
@@ -301,23 +301,19 @@ int main(int argc, char **argv)
     }
     host = argv[1];
     port = argv[2];
-    if (argc >= 4) min_udp_len = atoi(argv[3]);
-    if (argc >= 5) max_udp_len = atoi(argv[4]);
-    if (argc >= 6) udp_cnt = atoi(argv[5]);
+    if (argc >= 4) udp_cnt = atoi(argv[3]);
+    if (argc >= 5) min_udp_len = atoi(argv[4]);
+    if (argc >= 6) max_udp_len = atoi(argv[5]);
     if (argc >= 7) min_ping_interval = atoi(argv[6]);
     if (argc >= 8) max_ping_interval = atoi(argv[7]);
 
-    printf("UDP服务器：%s:%s, 报文大小范围：[%u, %u] 字节, 报文数：%u, "
+    printf("UDP服务器：%s:%s, 报文数：%u, 报文大小范围：[%u, %u] 字节, "
             "探测时间间隔：[%u, %u] 毫秒\n",
-           host, port, min_udp_len, max_udp_len,
-           udp_cnt, min_ping_interval, max_ping_interval);
+           host, port, udp_cnt, min_udp_len, max_udp_len,
+           min_ping_interval, max_ping_interval);
 
     if (0 == udp_cnt || udp_cnt > MAX_UDP_CNT) {
         printf("发送的报文数%u 必须大于0，小于%u!!\n", udp_cnt, MAX_UDP_CNT);
-        exit(1);
-    }
-    if (min_ping_interval > max_ping_interval) {
-        printf("最小探测时间间隔 %u > 最大时间间隔 %u\n", min_ping_interval, max_ping_interval);
         exit(1);
     }
     if (min_udp_len > max_udp_len
@@ -327,6 +323,10 @@ int main(int argc, char **argv)
         || 0 != max_udp_len % 4) {
         printf("[min_udp_len][max_udp_len] UDP报文字节数范围为[%u, %u]，"
                 "且必须是4的倍数\n", MIN_UDP_LEN, MAX_UDP_LEN);
+        exit(1);
+    }
+    if (min_ping_interval > max_ping_interval) {
+        printf("最小探测时间间隔 %u > 最大时间间隔 %u\n", min_ping_interval, max_ping_interval);
         exit(1);
     }
 
